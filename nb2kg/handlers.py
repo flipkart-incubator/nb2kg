@@ -292,6 +292,18 @@ class KernelHandler(APIHandler):
         self.finish()
 
 
+class KernelsShutdownHandler(APIHandler):
+    """Adding an extra KernelsShutdownHandler to delete all kernels for current user."""
+
+    @web.authenticated
+    @gen.coroutine
+    def delete(self):
+        km = self.kernel_manager
+        yield gen.maybe_future(km.shutdown_jeg_kernels())
+        self.set_status(204)
+        self.finish()
+
+
 class KernelActionHandler(APIHandler):
     """Replace default KernelActionHandler to enable async lookup of kernels."""
 
@@ -367,6 +379,7 @@ default_handlers = [
     (r"/api/kernels/%s" % _kernel_id_regex, KernelHandler),
     (r"/api/kernels/%s/%s" % (_kernel_id_regex, _kernel_action_regex), KernelActionHandler),
     (r"/api/kernels/%s/channels" % _kernel_id_regex, WebSocketChannelsHandler),
+    (r"/api/kernels/shutdown", KernelsShutdownHandler),
     (r"/api/kernelspecs", MainKernelSpecHandler),
     (r"/api/kernelspecs/%s" % kernel_name_regex, KernelSpecHandler),
     (r"/kernelspecs/%s/(?P<path>.*)" % kernel_name_regex, KernelSpecResourceHandler),

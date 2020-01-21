@@ -3,10 +3,12 @@
 
 import os
 import json
+import uuid
 
 from tornado import gen
 from tornado.escape import json_encode, json_decode, url_escape
 from tornado.httpclient import HTTPClient, AsyncHTTPClient, HTTPError
+from ipython_genutils.py3compat import unicode_type
 
 from notebook.services.kernels.kernelmanager import MappingKernelManager
 from notebook.services.sessions.sessionmanager import (
@@ -20,6 +22,7 @@ from traitlets import Instance, Unicode, default
 # TODO: Find a better way to specify global configuration options 
 # for a server extension.
 KG_URL = os.getenv('KG_URL', 'http://127.0.0.1:8888/')
+KERNEL_USERNAME = os.getenv('KERNEL_USERNAME', '')
 KG_HEADERS = json.loads(os.getenv('KG_HEADERS', '{}'))
 KG_HEADERS.update({
     'Authorization': 'token {}'.format(os.getenv('KG_AUTH_TOKEN', ''))
@@ -72,6 +75,8 @@ class RemoteKernelManager(MappingKernelManager):
     kernels_endpoint = Unicode(config=True,
         help="""The kernel gateway API endpoint for accessing kernel resources 
         (KG_KERNELS_ENDPOINT env var)""")
+
+    _accepted_kernels_ids = []
 
     @default('kernels_endpoint')
     def kernels_endpoint_default(self):
@@ -144,9 +149,13 @@ class RemoteKernelManager(MappingKernelManager):
             if path is not None and kernel_env.get('KERNEL_WORKING_DIR') is None:
                 kernel_env['KERNEL_WORKING_DIR'] = self.cwd_for_path(path)
 
-            json_body = json_encode({'name': kernel_name, 'env': kernel_env})
+            generated_kernel_id = unicode_type(uuid.uuid4())
+            json_body = json_encode({'name': kernel_name, 'env': kernel_env, 'custom_kernel_id': generated_kernel_id})
 
+            self._accepted_kernels_ids.append(generated_kernel_id)
             response = yield fetch_kg(self.kernels_endpoint, method='POST', body=json_body)
+
+            self._accepted_kernels_ids.remove(generated_kernel_id)
             kernel = json_decode(response.body)
             kernel_id = kernel['id']
             self.log.info("Kernel started: %s" % kernel_id)
@@ -223,6 +232,15 @@ class RemoteKernelManager(MappingKernelManager):
         self._remove_kernel(kernel_id)
 
     @gen.coroutine
+    def shutdown_jeg_kernels(self):
+        """Shutdown all kernels for current user where current user value is stored in 'KERNEL_USERNAME'"""
+        self.log.debug("Request shutdown all kernels of User:%s", KERNEL_USERNAME)
+        user_url = url_path_join(self.kernels_endpoint, "shutdown/" + url_escape(str(KERNEL_USERNAME)))
+        self.log.debug("Request delete kernels at: %s", user_url)
+        response = yield fetch_kg(user_url, method='DELETE')
+        self.log.debug("Shutdown kernels response: %d %s", response.code, response.reason)
+
+    @gen.coroutine
     def restart_kernel(self, kernel_id, now=False, **kwargs):
         """Restart a kernel by its kernel uuid.
 
@@ -267,6 +285,16 @@ class RemoteKernelManager(MappingKernelManager):
                 pass
             self.log.debug("Delete kernel response: %d %s",
                 response.code, response.reason)
+
+        for kernel_id in self._accepted_kernels_ids:
+            kernel_url = url_path_join(KG_URL, self._kernel_id_to_url(kernel_id))
+            self.log.debug("Request delete kernel at: %s", kernel_url)
+            try:
+                response = client.fetch(kernel_url, **kwargs)
+            except HTTPError:
+                pass
+            self.log.debug("Shutdown kernel response: %d %s", response.code, response.reason)
+
         client.close()
 
 
